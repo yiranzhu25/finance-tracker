@@ -62,10 +62,7 @@ function BudgetBar({ spent, budget }: { spent: number; budget: number }) {
 }
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true'
 
   const now = new Date()
   const year = now.getFullYear()
@@ -78,26 +75,30 @@ export default async function DashboardPage() {
   const total = daysInMonth(year, month)
   const daysRemaining = total - elapsed
 
-  // Try to get real data
   let income = MOCK_SUMMARY.income
   let expenses = MOCK_SUMMARY.expenses
 
-  if (user) {
-    const { data: txns } = await supabase
-      .from('transactions')
-      .select('amount, top_level_type')
-      .eq('user_id', user.id)
-      .gte('date', monthStart)
-      .lte('date', monthEnd)
+  if (!isDemoMode) {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
 
-    if (txns && txns.length > 0) {
-      const rows = txns as { amount: number; top_level_type: string }[]
-      income = rows
-        .filter((t) => t.top_level_type === 'income')
-        .reduce((s, t) => s + t.amount, 0)
-      expenses = rows
-        .filter((t) => t.top_level_type === 'expense')
-        .reduce((s, t) => s + t.amount, 0)
+    if (user) {
+      const { data: txns } = await supabase
+        .from('transactions')
+        .select('amount, top_level_type')
+        .eq('user_id', user.id)
+        .gte('date', monthStart)
+        .lte('date', monthEnd)
+
+      if (txns && txns.length > 0) {
+        const rows = txns as { amount: number; top_level_type: string }[]
+        income = rows
+          .filter((t) => t.top_level_type === 'income')
+          .reduce((s, t) => s + t.amount, 0)
+        expenses = rows
+          .filter((t) => t.top_level_type === 'expense')
+          .reduce((s, t) => s + t.amount, 0)
+      }
     }
   }
 

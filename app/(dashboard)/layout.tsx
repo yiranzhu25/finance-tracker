@@ -8,18 +8,26 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode
 }) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true'
 
-  if (!user) {
-    redirect('/login')
+  let userEmail: string | undefined
+
+  if (!isDemoMode) {
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      redirect('/login')
+    }
+
+    userEmail = user.email
   }
 
   return (
     <>
-      <SidebarLayout userEmail={user.email}>
+      <SidebarLayout userEmail={userEmail}>
         <div className="pb-20 md:pb-0">
           {children}
         </div>
