@@ -5,8 +5,9 @@ import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Modal from '@/components/ui/Modal'
 import Input from '@/components/ui/Input'
+import PlaidLinkButton from '@/components/plaid/PlaidLinkButton'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { RefreshCw, Unplug, Plus, Edit2 } from 'lucide-react'
+import { RefreshCw, Unplug, Edit2 } from 'lucide-react'
 
 interface ConnectedAccount {
   id: string
@@ -110,9 +111,7 @@ export default function AccountsPage() {
           >
             Sync All
           </Button>
-          <Button variant="primary" size="sm" icon={<Plus size={14} />}>
-            Connect Account
-          </Button>
+          <PlaidLinkButton onSuccess={() => window.location.reload()} />
         </div>
       </div>
 
