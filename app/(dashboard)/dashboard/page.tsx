@@ -8,27 +8,6 @@ import {
   projectAmount,
 } from '@/lib/utils'
 
-// Mock data for demo / when DB is empty
-const MOCK_BUDGETS = [
-  { category: 'Food & Dining', spent: 840, budget: 1000, color: '#FF9500' },
-  { category: 'Transportation', spent: 320, budget: 300, color: '#FF3B30' },
-  { category: 'Entertainment', spent: 180, budget: 200, color: '#34C759' },
-  { category: 'Shopping', spent: 650, budget: 500, color: '#FF3B30' },
-  { category: 'Health', spent: 120, budget: 200, color: '#34C759' },
-  { category: 'Utilities', spent: 210, budget: 250, color: '#34C759' },
-]
-
-const MOCK_SUMMARY = {
-  income: 8500,
-  expenses: 3920,
-  net: 4580,
-}
-
-const MOCK_QUICK_STATS = {
-  netWorth: 142850,
-  investments: 98400,
-}
-
 function BudgetBar({ spent, budget }: { spent: number; budget: number }) {
   const pct = Math.min((spent / budget) * 100, 100)
   const color =
@@ -62,53 +41,106 @@ function BudgetBar({ spent, budget }: { spent: number; budget: number }) {
 }
 
 export default async function DashboardPage() {
-  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true'
-
   const now = new Date()
   const year = now.getFullYear()
   const month = now.getMonth() + 1
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`
   const monthEnd = `${year}-${String(month).padStart(2, '0')}-31`
+  const monthKey = `${year}-${String(month).padStart(2, '0')}`
 
   const monthName = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
   const elapsed = daysElapsedInMonth()
   const total = daysInMonth(year, month)
   const daysRemaining = total - elapsed
 
-  let income = MOCK_SUMMARY.income
-  let expenses = MOCK_SUMMARY.expenses
+  const supabase = await createClient()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = supabase as any
+  const { data: { user } } = await supabase.auth.getUser()
 
-  if (!isDemoMode) {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+  let income = 0
+  let expenses = 0
+  type BudgetRow = { category: string; spent: number; budget: number }
+  let budgetRows: BudgetRow[] = []
+  let netWorth = 0
+  let investments = 0
 
-    if (user) {
-      const { data: txns } = await supabase
+  if (user) {
+    // Income / expenses this month
+    const { data: txns } = await db
+      .from('transactions')
+      .select('amount, top_level_type')
+      .eq('user_id', user.id)
+      .neq('top_level_type', 'transfer')
+      .gte('date', monthStart)
+      .lte('date', monthEnd)
+
+    for (const t of txns ?? []) {
+      if (t.top_level_type === 'income') income += Number(t.amount)
+      else if (t.top_level_type === 'expense') expenses += Number(t.amount)
+    }
+
+    // Spending by category with budgets
+    const [{ data: catTxns }, { data: budgets }] = await Promise.all([
+      db
         .from('transactions')
-        .select('amount, top_level_type')
+        .select('amount, category_id, categories(name)')
         .eq('user_id', user.id)
+        .eq('top_level_type', 'expense')
         .gte('date', monthStart)
-        .lte('date', monthEnd)
+        .lte('date', monthEnd),
+      db
+        .from('budgets')
+        .select('category_id, amount, frequency, categories(name)')
+        .eq('user_id', user.id)
+        .is('subcategory_id', null),
+    ])
 
-      if (txns && txns.length > 0) {
-        const rows = txns as { amount: number; top_level_type: string }[]
-        income = rows
-          .filter((t) => t.top_level_type === 'income')
-          .reduce((s, t) => s + t.amount, 0)
-        expenses = rows
-          .filter((t) => t.top_level_type === 'expense')
-          .reduce((s, t) => s + t.amount, 0)
+    const spendMap: Record<string, { name: string; spent: number; budget: number }> = {}
+    for (const t of catTxns ?? []) {
+      const key = t.category_id ?? 'uncategorized'
+      const name = t.categories?.name ?? 'Uncategorized'
+      if (!spendMap[key]) spendMap[key] = { name, spent: 0, budget: 0 }
+      spendMap[key].spent += Number(t.amount)
+    }
+    for (const b of budgets ?? []) {
+      if (!b.category_id) continue
+      const key = b.category_id
+      const name = b.categories?.name ?? ''
+      if (!spendMap[key]) spendMap[key] = { name, spent: 0, budget: 0 }
+      spendMap[key].budget = b.frequency === 'yearly' ? b.amount / 12 : b.amount
+    }
+    budgetRows = Object.values(spendMap)
+      .filter((r) => r.spent > 0 || r.budget > 0)
+      .sort((a, b) => {
+        const aRatio = a.budget > 0 ? a.spent / a.budget : 0
+        const bRatio = b.budget > 0 ? b.spent / b.budget : 0
+        return bRatio - aRatio
+      })
+      .slice(0, 6)
+      .map((r) => ({ category: r.name, spent: r.spent, budget: r.budget }))
+
+    // Net worth and investments from account balances
+    const { data: accs } = await db
+      .from('accounts')
+      .select('type, current_balance')
+      .eq('user_id', user.id)
+
+    for (const a of accs ?? []) {
+      const bal = Number(a.current_balance ?? 0)
+      if (a.type === 'credit' || a.type === 'loan') {
+        netWorth -= bal
+      } else {
+        netWorth += bal
+        if (a.type === 'investment') investments += bal
       }
     }
   }
 
   const net = income - expenses
   const projectedExpenses = projectAmount(expenses, elapsed, total)
-
-  // Worst budget performer
-  const worstBudget = [...MOCK_BUDGETS].sort(
-    (a, b) => b.spent / b.budget - a.spent / a.budget
-  )[0]
+  const worstBudget = budgetRows.length > 0 ? budgetRows[0] : null
+  void monthKey
 
   return (
     <div style={{ padding: '24px', maxWidth: '1100px' }}>
@@ -185,7 +217,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Top Overspend Alert */}
-      {worstBudget.spent > worstBudget.budget * 0.8 && (
+      {worstBudget && worstBudget.budget > 0 && worstBudget.spent > worstBudget.budget * 0.8 && (
         <div
           style={{
             backgroundColor: worstBudget.spent > worstBudget.budget
@@ -238,6 +270,11 @@ export default async function DashboardPage() {
         >
           Budget Performance
         </h2>
+        {budgetRows.length === 0 ? (
+          <p style={{ color: 'var(--system-gray)', fontSize: '14px' }}>
+            No spending data yet. Connect a bank account and set budgets in Settings to see performance here.
+          </p>
+        ) : null}
         <div
           style={{
             display: 'grid',
@@ -245,7 +282,7 @@ export default async function DashboardPage() {
             gap: '12px',
           }}
         >
-          {MOCK_BUDGETS.map((b) => {
+          {budgetRows.map((b) => {
             const pct = b.spent / b.budget
             const variance = b.budget - b.spent
             return (
@@ -301,7 +338,7 @@ export default async function DashboardPage() {
               Net Worth
             </p>
             <p style={{ fontSize: '26px', fontWeight: '700', color: 'var(--label)' }}>
-              {formatCurrency(MOCK_QUICK_STATS.netWorth)}
+              {formatCurrency(netWorth)}
             </p>
           </Card>
           <Card>
@@ -309,7 +346,7 @@ export default async function DashboardPage() {
               Investments
             </p>
             <p style={{ fontSize: '26px', fontWeight: '700', color: 'var(--system-indigo)' }}>
-              {formatCurrency(MOCK_QUICK_STATS.investments)}
+              {formatCurrency(investments)}
             </p>
           </Card>
         </div>

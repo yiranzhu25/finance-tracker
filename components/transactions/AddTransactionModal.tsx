@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Modal from '@/components/ui/Modal'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -10,12 +10,6 @@ interface AddTransactionModalProps {
   onClose: () => void
   onAdd: (t: Transaction) => void
 }
-
-const MOCK_ACCOUNTS = [
-  { id: 'a1', name: 'Chase Checking' },
-  { id: 'a2', name: 'Marcus HYSA' },
-  { id: 'a3', name: 'Fidelity Brokerage' },
-]
 
 const CATEGORIES: Record<TopLevelType, string[]> = {
   expense: ['Food & Dining', 'Transportation', 'Entertainment', 'Shopping', 'Health', 'Utilities', 'Other'],
@@ -41,11 +35,24 @@ const TYPE_OPTIONS: { value: TopLevelType; label: string }[] = [
 ]
 
 export default function AddTransactionModal({ onClose, onAdd }: AddTransactionModalProps) {
+  const [accounts, setAccounts] = useState<{ id: string; name: string }[]>([])
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
-  const [accountId, setAccountId] = useState(MOCK_ACCOUNTS[0].id)
+  const [accountId, setAccountId] = useState('')
   const [type, setType] = useState<TopLevelType>('expense')
+
+  useEffect(() => {
+    fetch('/api/accounts')
+      .then((r) => r.json())
+      .then(({ accounts: accs }) => {
+        if (accs?.length) {
+          setAccounts(accs.map((a: { id: string; name: string }) => ({ id: a.id, name: a.name })))
+          setAccountId(accs[0].id)
+        }
+      })
+      .catch(() => {})
+  }, [])
   const [category, setCategory] = useState('')
   const [subcategory, setSubcategory] = useState('')
   const [notes, setNotes] = useState('')
@@ -90,28 +97,7 @@ export default function AddTransactionModal({ onClose, onAdd }: AddTransactionMo
         setError(apiError || 'Failed to add transaction.')
       }
     } catch {
-      // Use mock data when API is not configured
-      const mockTx: Transaction = {
-        id: Math.random().toString(36).slice(2),
-        created_at: new Date().toISOString(),
-        user_id: 'u1',
-        plaid_transaction_id: null,
-        date,
-        amount: parseFloat(amount),
-        description,
-        merchant_name: null,
-        account_id: accountId,
-        top_level_type: type,
-        category_id: category || null,
-        subcategory_id: subcategory || null,
-        transfer_pair_id: null,
-        is_recurring: isRecurring,
-        recurring_group_id: null,
-        is_manual: true,
-        notes: notes || null,
-        pending: false,
-      }
-      onAdd(mockTx)
+      setError('Failed to add transaction. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -164,9 +150,11 @@ export default function AddTransactionModal({ onClose, onAdd }: AddTransactionMo
               color: 'var(--label)',
             }}
           >
-            {MOCK_ACCOUNTS.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
+            {accounts.length === 0
+              ? <option value="">No accounts found</option>
+              : accounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
           </select>
         </div>
 

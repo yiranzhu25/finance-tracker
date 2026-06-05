@@ -1,42 +1,27 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Modal from '@/components/ui/Modal'
 import Input from '@/components/ui/Input'
 import PlaidLinkButton from '@/components/plaid/PlaidLinkButton'
-import { formatCurrency, formatDate } from '@/lib/utils'
-import { RefreshCw, Unplug, Edit2 } from 'lucide-react'
+import { formatCurrency } from '@/lib/utils'
+import { RefreshCw, Unplug } from 'lucide-react'
 
-interface ConnectedAccount {
+interface AccountRow {
   id: string
-  institution: string
   name: string
+  official_name: string | null
   type: string
-  balance: number
-  lastSynced: string
+  subtype: string | null
+  is_manual: boolean
+  current_balance: number | null
+  mask: string | null
+  last_synced_at: string | null
+  plaid_item_id: string | null
+  plaid_items: { institution_name: string | null; last_synced_at: string | null } | null
 }
-
-interface ManualAccount {
-  id: string
-  name: string
-  value: number
-  lastUpdated: string
-}
-
-const MOCK_CONNECTED: ConnectedAccount[] = [
-  { id: '1', institution: 'Chase', name: 'Checking ••4821', type: 'Checking', balance: 12400, lastSynced: '2026-05-17T08:00:00Z' },
-  { id: '2', institution: 'Chase', name: 'Sapphire Reserve ••7291', type: 'Credit Card', balance: -2800, lastSynced: '2026-05-17T08:00:00Z' },
-  { id: '3', institution: 'Marcus', name: 'High-Yield Savings', type: 'Savings', balance: 18200, lastSynced: '2026-05-16T20:00:00Z' },
-  { id: '4', institution: 'Fidelity', name: 'Brokerage ••3381', type: 'Brokerage', balance: 38600, lastSynced: '2026-05-17T06:00:00Z' },
-]
-
-const MOCK_MANUAL: ManualAccount[] = [
-  { id: '1', name: '401k (Fidelity)', value: 42500, lastUpdated: '2026-05-01' },
-  { id: '2', name: '401k (Vanguard)', value: 28100, lastUpdated: '2026-05-01' },
-  { id: '3', name: '529 Plan', value: 11150, lastUpdated: '2026-05-01' },
-]
 
 function InstitutionLogo({ name }: { name: string }) {
   return (
@@ -61,38 +46,66 @@ function InstitutionLogo({ name }: { name: string }) {
 }
 
 export default function AccountsPage() {
-  const [connected, setConnected] = useState(MOCK_CONNECTED)
-  const [manual, setManual] = useState(MOCK_MANUAL)
+  const [accounts, setAccounts] = useState<AccountRow[]>([])
+  const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
-  const [updateModal, setUpdateModal] = useState<ManualAccount | null>(null)
+  const [updateModal, setUpdateModal] = useState<AccountRow | null>(null)
   const [updateValue, setUpdateValue] = useState('')
+  const [disconnecting, setDisconnecting] = useState<string | null>(null)
+
+  const loadAccounts = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/accounts')
+      const { accounts: accs } = await res.json()
+      setAccounts(accs ?? [])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadAccounts() }, [loadAccounts])
 
   async function handleSyncAll() {
     setSyncing(true)
-    await new Promise((r) => setTimeout(r, 1500))
-    setSyncing(false)
+    try {
+      await fetch('/api/plaid/sync', { method: 'POST' })
+      await loadAccounts()
+    } finally {
+      setSyncing(false)
+    }
   }
 
-  function handleDisconnect(id: string) {
-    setConnected((prev) => prev.filter((a) => a.id !== id))
+  async function handleDisconnect(id: string) {
+    setDisconnecting(id)
+    try {
+      await fetch(`/api/accounts/${id}`, { method: 'DELETE' })
+      await loadAccounts()
+    } finally {
+      setDisconnecting(null)
+    }
   }
 
-  function openUpdate(acc: ManualAccount) {
-    setUpdateModal(acc)
-    setUpdateValue(acc.value.toString())
-  }
-
-  function saveUpdate() {
+  async function saveManualUpdate() {
     if (!updateModal) return
-    setManual((prev) =>
-      prev.map((a) =>
-        a.id === updateModal.id
-          ? { ...a, value: parseFloat(updateValue) || a.value, lastUpdated: new Date().toISOString().split('T')[0] }
-          : a
-      )
-    )
+    const value = parseFloat(updateValue)
+    if (isNaN(value)) return
+    // Update via snapshots API
+    await fetch('/api/snapshots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: updateModal.id,
+        date: new Date().toISOString().split('T')[0],
+        value,
+      }),
+    })
     setUpdateModal(null)
+    await loadAccounts()
   }
+
+  const connected = accounts.filter((a) => !a.is_manual && a.plaid_item_id)
+  const manual = accounts.filter((a) => a.is_manual)
 
   return (
     <div style={{ padding: '24px', maxWidth: '900px' }}>
@@ -111,7 +124,7 @@ export default function AccountsPage() {
           >
             Sync All
           </Button>
-          <PlaidLinkButton onSuccess={() => window.location.reload()} />
+          <PlaidLinkButton onSuccess={() => loadAccounts()} />
         </div>
       </div>
 
@@ -121,118 +134,126 @@ export default function AccountsPage() {
           Connected Accounts
         </h2>
         <Card>
-          {connected.map((acc, idx) => (
-            <div
-              key={acc.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '12px 0',
-                borderBottom: idx < connected.length - 1 ? '1px solid var(--system-gray6)' : 'none',
-              }}
-            >
-              <InstitutionLogo name={acc.institution} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: '14px', fontWeight: '500', color: 'var(--label)' }}>
-                  {acc.name}
-                </p>
-                <p style={{ fontSize: '12px', color: 'var(--system-gray)', marginTop: '2px' }}>
-                  {acc.institution} · {acc.type} · Last synced {new Date(acc.lastSynced).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
-                </p>
-              </div>
-              <span
-                style={{
-                  fontSize: '15px',
-                  fontWeight: '600',
-                  color: acc.balance < 0 ? 'var(--system-red)' : 'var(--label)',
-                  minWidth: '100px',
-                  textAlign: 'right',
-                }}
-              >
-                {formatCurrency(Math.abs(acc.balance))}
-              </span>
-              <button
-                onClick={() => handleDisconnect(acc.id)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  backgroundColor: 'var(--system-gray6)',
-                  color: 'var(--system-gray)',
-                  fontSize: '12px',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                }}
-              >
-                <Unplug size={12} />
-                Disconnect
-              </button>
-            </div>
-          ))}
-          {connected.length === 0 && (
+          {loading ? (
             <div style={{ padding: '32px', textAlign: 'center', color: 'var(--system-gray)' }}>
-              No connected accounts. Click "Connect Account" to link your bank.
+              Loading accounts…
             </div>
+          ) : connected.length === 0 ? (
+            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--system-gray)' }}>
+              No connected accounts. Click &ldquo;Connect Account&rdquo; to link your bank.
+            </div>
+          ) : (
+            connected.map((acc, idx) => {
+              const institution = acc.plaid_items?.institution_name ?? acc.name
+              const syncedAt = acc.plaid_items?.last_synced_at ?? acc.last_synced_at
+              return (
+                <div
+                  key={acc.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '12px 0',
+                    borderBottom: idx < connected.length - 1 ? '1px solid var(--system-gray6)' : 'none',
+                  }}
+                >
+                  <InstitutionLogo name={institution} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: '14px', fontWeight: '500', color: 'var(--label)' }}>
+                      {acc.name}{acc.mask ? ` ••${acc.mask}` : ''}
+                    </p>
+                    <p style={{ fontSize: '12px', color: 'var(--system-gray)', marginTop: '2px' }}>
+                      {institution} · {acc.subtype ?? acc.type}
+                      {syncedAt ? ` · Synced ${new Date(syncedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                    </p>
+                  </div>
+                  <span
+                    style={{
+                      fontSize: '15px',
+                      fontWeight: '600',
+                      color: (acc.current_balance ?? 0) < 0 ? 'var(--system-red)' : 'var(--label)',
+                      minWidth: '100px',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {acc.current_balance != null ? formatCurrency(Math.abs(acc.current_balance)) : '—'}
+                  </span>
+                  <button
+                    onClick={() => handleDisconnect(acc.id)}
+                    disabled={disconnecting === acc.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '6px 10px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      backgroundColor: 'var(--system-gray6)',
+                      color: 'var(--system-gray)',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                      opacity: disconnecting === acc.id ? 0.5 : 1,
+                    }}
+                  >
+                    <Unplug size={12} />
+                    {disconnecting === acc.id ? 'Removing…' : 'Disconnect'}
+                  </button>
+                </div>
+              )
+            })
           )}
         </Card>
       </div>
 
       {/* Manual accounts */}
-      <div>
-        <h2 style={{ fontSize: '17px', fontWeight: '600', color: 'var(--label)', marginBottom: '12px' }}>
-          Manual Accounts
-        </h2>
-        <Card>
-          {manual.map((acc, idx) => (
-            <div
-              key={acc.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '12px 0',
-                borderBottom: idx < manual.length - 1 ? '1px solid var(--system-gray6)' : 'none',
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: '14px', fontWeight: '500', color: 'var(--label)' }}>
-                  {acc.name}
-                </p>
-                <p style={{ fontSize: '12px', color: 'var(--system-gray)', marginTop: '2px' }}>
-                  Last updated {formatDate(acc.lastUpdated)}
-                </p>
-              </div>
-              <span style={{ fontSize: '15px', fontWeight: '600', color: 'var(--system-indigo)', minWidth: '100px', textAlign: 'right' }}>
-                {formatCurrency(acc.value)}
-              </span>
-              <button
-                onClick={() => openUpdate(acc)}
+      {manual.length > 0 && (
+        <div>
+          <h2 style={{ fontSize: '17px', fontWeight: '600', color: 'var(--label)', marginBottom: '12px' }}>
+            Manual Accounts
+          </h2>
+          <Card>
+            {manual.map((acc, idx) => (
+              <div
+                key={acc.id}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '4px',
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  backgroundColor: 'rgba(0,122,255,0.08)',
-                  color: 'var(--system-blue)',
-                  fontSize: '12px',
-                  fontWeight: '500',
-                  cursor: 'pointer',
-                  flexShrink: 0,
+                  gap: '12px',
+                  padding: '12px 0',
+                  borderBottom: idx < manual.length - 1 ? '1px solid var(--system-gray6)' : 'none',
                 }}
               >
-                <Edit2 size={12} />
-                Update Value
-              </button>
-            </div>
-          ))}
-        </Card>
-      </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: '14px', fontWeight: '500', color: 'var(--label)' }}>{acc.name}</p>
+                  <p style={{ fontSize: '12px', color: 'var(--system-gray)', marginTop: '2px' }}>
+                    {acc.last_synced_at ? `Updated ${new Date(acc.last_synced_at).toLocaleDateString()}` : 'No updates yet'}
+                  </p>
+                </div>
+                <span style={{ fontSize: '15px', fontWeight: '600', color: 'var(--system-indigo)', minWidth: '100px', textAlign: 'right' }}>
+                  {acc.current_balance != null ? formatCurrency(acc.current_balance) : '—'}
+                </span>
+                <button
+                  onClick={() => { setUpdateModal(acc); setUpdateValue(String(acc.current_balance ?? '')) }}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    backgroundColor: 'rgba(0,122,255,0.08)',
+                    color: 'var(--system-blue)',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  Update Value
+                </button>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
 
       {/* Update Value Modal */}
       <Modal
@@ -251,7 +272,7 @@ export default function AccountsPage() {
           />
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <Button variant="secondary" size="md" onClick={() => setUpdateModal(null)}>Cancel</Button>
-            <Button variant="primary" size="md" onClick={saveUpdate}>Save</Button>
+            <Button variant="primary" size="md" onClick={saveManualUpdate}>Save</Button>
           </div>
         </div>
       </Modal>

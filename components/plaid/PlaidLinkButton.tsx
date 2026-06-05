@@ -41,6 +41,8 @@ export default function PlaidLinkButton({ onSuccess }: PlaidLinkButtonProps) {
         })
         const data = await res.json()
         if (data.error) throw new Error(data.error)
+        // Pull in transactions for the newly connected institution
+        await fetch('/api/plaid/sync', { method: 'POST' })
         onSuccess?.()
       } catch (e) {
         setError('Failed to link account. Please try again.')
